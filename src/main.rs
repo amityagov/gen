@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, clap::ValueEnum, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum Operation {
+    Script,
     CreateTable,
     AlterTable,
     DropTable,
@@ -20,6 +21,7 @@ enum Operation {
 impl Operation {
     fn to_file_name(&self, name: &str, column: Option<&str>) -> String {
         match self {
+            Operation::Script => name.replace(' ', "_").to_string(),
             Operation::CreateTable => format!("{} {}", "create table", name),
             Operation::AlterTable => format!("{} {}", "alter table", name),
             Operation::DropTable => format!("{} {}", "drop table", name),
