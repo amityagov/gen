@@ -4,7 +4,17 @@ use log::{info, LevelFilter};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+
+#[derive(Serialize)]
+struct TemplateData {
+    table_name: String,
+    column_name: Option<String>,
+    schema_name: Option<String>,
+    dot: Option<String>,
+    template: &'static str,
+}
 
 #[derive(Debug, clap::ValueEnum, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -30,6 +40,41 @@ impl Operation {
             Operation::DropColumn => format!("{} {} from {}", "drop column", column.unwrap(), name),
         }
     }
+
+    fn get_template_data(
+        &self,
+        name: &str,
+        schema: Option<&str>,
+        column: Option<&str>,
+    ) -> Option<TemplateData> {
+        match self {
+            Operation::Script => None,
+            Operation::CreateTable => Some(TemplateData {
+                table_name: name.to_owned(),
+                column_name: None,
+                schema_name: schema.map(ToString::to_string),
+                dot: schema.map(|_| ".".to_string()),
+                template: include_str!("../templates/create_table.tmpl"),
+            }),
+            Operation::AlterTable => None,
+            Operation::DropTable => None,
+            Operation::AddColumn => Some(TemplateData {
+                table_name: name.to_owned(),
+                column_name: column.map(ToString::to_string),
+                schema_name: schema.map(ToString::to_string),
+                dot: schema.map(|_| ".".to_string()),
+                template: include_str!("../templates/add_column.tmpl"),
+            }),
+            Operation::AlterColumn => None,
+            Operation::DropColumn => Some(TemplateData {
+                table_name: name.to_owned(),
+                column_name: column.map(ToString::to_string),
+                schema_name: schema.map(ToString::to_string),
+                dot: schema.map(|_| ".".to_string()),
+                template: include_str!("../templates/drop_column.tmpl"),
+            }),
+        }
+    }
 }
 
 #[derive(Parser, Debug, Deserialize, Serialize)]
@@ -42,14 +87,17 @@ struct Args {
 
     #[clap(short, long)]
     column: Option<String>,
+
+    #[clap(short, long)]
+    schema: Option<String>,
 }
 
 impl Args {
     fn validate(&self) -> anyhow::Result<()> {
         match self.operation {
-            Operation::AddColumn |
-            Operation::AlterColumn |
-            Operation::DropColumn if self.column.is_none() => {
+            Operation::AddColumn | Operation::AlterColumn | Operation::DropColumn
+                if self.column.is_none() =>
+            {
                 return Err(anyhow::anyhow!("column is required"))
             }
             _ => {}
@@ -70,16 +118,33 @@ fn main() -> anyhow::Result<()> {
 
     let last_index = find_last_file_for_current_day(&root)?;
 
-    let current_date = Local::now().date_naive()
-        .format("%Y%m%d");
+    let current_date = Local::now().date_naive().format("%Y%m%d");
 
     let index = last_index.map(|index| index + 1).unwrap_or(1);
-    let file_name_part = args.operation.to_file_name(&args.name, args.column.as_deref());
+    let file_name_part = args
+        .operation
+        .to_file_name(&args.name, args.column.as_deref());
     let file_name = format!("{current_date}{index:02} - {file_name_part}.sql");
     info!("writing file {file_name}");
-    File::create(current_dir.join(file_name))?;
+
+    let template = args
+        .operation
+        .get_template_data(&args.name, args.schema.as_deref(), args.column.as_deref())
+        .map(|data| render_template(&data));
+
+    let mut file = File::create(current_dir.join(file_name))?;
+    if let Some(template) = template {
+        let template = template?;
+        file.write_all(template.as_bytes())?;
+    }
 
     Ok(())
+}
+
+fn render_template(template_data: &TemplateData) -> anyhow::Result<String> {
+    let mut engine = tinytemplate::TinyTemplate::new();
+    engine.add_template("template", template_data.template)?;
+    Ok(engine.render("template", template_data)?)
 }
 
 fn find_root(current_dir: &Path) -> anyhow::Result<PathBuf> {
